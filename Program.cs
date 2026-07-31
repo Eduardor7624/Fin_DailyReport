@@ -39,8 +39,8 @@ try
         Path.Combine(AppContext.BaseDirectory, settings.Logging.Directory),
         settings.Logging.RetentionDays);
 
-    logger.Info($"Starting {applicationName}. Report date: {reportDate:yyyy-MM-dd}. NoSend: {arguments.NoSend}.");
-    Console.WriteLine($"Finzati Daily Report - {reportDate:yyyy-MM-dd}");
+    logger.Info($"Starting {applicationName}. Period start date: {reportDate:yyyy-MM-dd}. NoSend: {arguments.NoSend}.");
+    Console.WriteLine($"Finzati Daily Report - period starts {reportDate:yyyy-MM-dd} at 09:25 Eastern");
     Console.WriteLine(new string('-', 48));
 
     var repository = new DailyReportRepository(
@@ -59,7 +59,7 @@ try
     var outputPath = Path.Combine(
         AppContext.BaseDirectory,
         settings.Report.OutputDirectory,
-        $"Finzati-Daily-Report-{reportDate:yyyy-MM-dd}.html");
+        $"Finzati-Daily-Report-{data.ReportDate:yyyy-MM-dd}.html");
 
     await File.WriteAllTextAsync(outputPath, html, cancellationSource.Token);
     logger.Info($"HTML report saved to {outputPath}.");
@@ -69,7 +69,7 @@ try
     {
         Console.WriteLine("Sending email...");
         var sender = new SmtpEmailSender(settings.Email);
-        var emailSubject = TemplateHelper.ReplaceDate(settings.Email.SubjectTemplate, reportDate);
+        var emailSubject = TemplateHelper.ReplaceDate(settings.Email.SubjectTemplate, data.ReportDate);
         await sender.SendHtmlAsync(emailSubject, html, cancellationSource.Token);
         logger.Info($"Email sent successfully to: {string.Join(", ", settings.Email.To)}.");
         Console.WriteLine("Email sent successfully.");

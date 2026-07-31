@@ -31,11 +31,14 @@ public sealed class DailyReportRepository
 
         return new DailyReportData
         {
-            ReportDate = period.ReportDate,
+            ReportDate = period.DisplayDate,
+            PeriodStartEastern = period.StartEastern,
+            PeriodEndEastern = period.EndEastern,
             ProcessSummary = await GetProcessSummaryAsync(connection, period, cancellationToken),
             ProcessGroups = await GetProcessGroupsAsync(connection, period, cancellationToken),
             OperationErrors = await GetOperationErrorsAsync(connection, period, cancellationToken),
             ProcessErrors = await GetProcessErrorsAsync(connection, period, cancellationToken),
+            UserActivity = await GetUserActivityAsync(connection, period, cancellationToken),
             VisitSummary = await GetVisitSummaryAsync(connection, period, cancellationToken),
             PageVisits = await GetPageVisitsAsync(connection, period, cancellationToken),
             CompanyVisits = await GetCompanyVisitsAsync(connection, period, cancellationToken),
@@ -45,43 +48,34 @@ public sealed class DailyReportRepository
     }
 
     /// <summary>
-    /// Creates the UTC interval corresponding to the requested calendar day in
-    /// Miami/New York time.
+    /// Builds the interval from 9:25 AM Eastern on the requested start date
+    /// through the current moment. With DefaultDaysOffset = -1, a report run
+    /// today reads everything from yesterday at 9:25 AM Eastern until now.
     ///
-    /// For today's report, the interval ends at the current UTC time so the
-    /// report covers local midnight through the moment it is generated.
-    /// For a past date, the interval covers the complete local calendar day.
-    /// Daylight-saving changes are handled automatically by TimeZoneInfo.
+    /// The displayed report date is today's date in Eastern Time, not the
+    /// requested start date.
     /// </summary>
     private ReportPeriod CreateReportPeriod(DateTime reportDate)
     {
-        var localReportDate = reportDate.Date;
-        var localStart = DateTime.SpecifyKind(localReportDate, DateTimeKind.Unspecified);
-        var localEnd = localStart.AddDays(1);
-
-        var startUtc = TimeZoneInfo.ConvertTimeToUtc(localStart, _easternTimeZone);
-        var nextDayStartUtc = TimeZoneInfo.ConvertTimeToUtc(localEnd, _easternTimeZone);
-
         var nowUtc = DateTime.UtcNow;
-        var todayEastern = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, _easternTimeZone).Date;
+        var nowEastern = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, _easternTimeZone);
 
-        DateTime endUtc;
+        var startEastern = DateTime.SpecifyKind(
+            reportDate.Date.AddHours(9).AddMinutes(25),
+            DateTimeKind.Unspecified);
 
-        if (localReportDate == todayEastern)
-        {
-            endUtc = nowUtc < nextDayStartUtc ? nowUtc : nextDayStartUtc;
-        }
-        else if (localReportDate < todayEastern)
-        {
-            endUtc = nextDayStartUtc;
-        }
-        else
-        {
-            // A future report date has no elapsed reporting window yet.
-            endUtc = startUtc;
-        }
+        var startUtc = TimeZoneInfo.ConvertTimeToUtc(startEastern, _easternTimeZone);
 
-        return new ReportPeriod(localReportDate, startUtc, endUtc);
+        // Protect against a future/invalid start date.
+        var endUtc = nowUtc >= startUtc ? nowUtc : startUtc;
+        var endEastern = TimeZoneInfo.ConvertTimeFromUtc(endUtc, _easternTimeZone);
+
+        return new ReportPeriod(
+            DisplayDate: nowEastern.Date,
+            StartEastern: startEastern,
+            EndEastern: endEastern,
+            StartUtc: startUtc,
+            EndUtc: endUtc);
     }
 
     private SqlCommand CreateCommand(
@@ -108,9 +102,24 @@ public sealed class DailyReportRepository
     {
         const string sql = """
 SELECT COUNT(*) TotalEjecuciones,
-       SUM(CASE WHEN UPPER(ISNULL(Status,'')) = 'SUCCESS' THEN 1 ELSE 0 END) EjecucionesExitosas,
-       SUM(CASE WHEN UPPER(ISNULL(Status,'')) IN ('ERROR','FAILED','FAILURE') THEN 1 ELSE 0 END) EjecucionesConError,
-       SUM(CASE WHEN UPPER(ISNULL(Status,'')) NOT IN ('SUCCESS','ERROR','FAILED','FAILURE') THEN 1 ELSE 0 END) OtrosEstados,
+       SUM(CASE
+               WHEN UPPER(ISNULL(Status,'')) = 'SUCCESS'
+                    AND ISNULL(ErrorCount,0) = 0
+                    AND ProcessException IS NULL
+               THEN 1 ELSE 0
+           END) EjecucionesExitosas,
+       SUM(CASE
+               WHEN UPPER(ISNULL(Status,'')) IN ('ERROR','FAILED','FAILURE','SUCCESS_WITH_ERRORS')
+                    OR ISNULL(ErrorCount,0) > 0
+                    OR ProcessException IS NOT NULL
+               THEN 1 ELSE 0
+           END) EjecucionesConError,
+       SUM(CASE
+               WHEN UPPER(ISNULL(Status,'')) NOT IN ('SUCCESS','ERROR','FAILED','FAILURE','SUCCESS_WITH_ERRORS')
+                    AND ISNULL(ErrorCount,0) = 0
+                    AND ProcessException IS NULL
+               THEN 1 ELSE 0
+           END) OtrosEstados,
        COUNT(DISTINCT ApplicationName) CantidadAplicaciones,
        SUM(ISNULL(TotalItems,0)) TotalItems,
        SUM(ISNULL(SuccessCount,0)) TotalExitosos,
@@ -256,7 +265,7 @@ FROM dbo.AmericaMarketProcessRuns
 WHERE CreatedDate >= @StartUtc
   AND CreatedDate < @EndUtc
   AND (
-        UPPER(ISNULL(Status,'')) IN ('ERROR','FAILED','FAILURE')
+        UPPER(ISNULL(Status,'')) IN ('ERROR','FAILED','FAILURE','SUCCESS_WITH_ERRORS')
         OR ISNULL(ErrorCount,0) > 0
         OR ProcessException IS NOT NULL
       )
@@ -285,6 +294,72 @@ ORDER BY CantidadErrores DESC, UltimaOcurrencia DESC;
         }
 
         return list;
+    }
+
+    private async Task<UserActivitySummary> GetUserActivityAsync(
+        SqlConnection connection,
+        ReportPeriod period,
+        CancellationToken cancellationToken)
+    {
+        const string registrationSql = """
+SELECT COUNT(*) RegisteredUsers,
+       SUM(CASE WHEN IsActive = 1 THEN 1 ELSE 0 END) RegisteredAndActiveUsers,
+       SUM(CASE WHEN IsActive = 0 THEN 1 ELSE 0 END) RegisteredButInactiveUsers
+FROM [AmericaMarket].[dbo].[Users]
+WHERE CreatedAt >= @StartUtc
+  AND CreatedAt < @EndUtc;
+""";
+
+        var result = new UserActivitySummary();
+
+        await using (var command = CreateCommand(connection, registrationSql, period))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                result.RegisteredUsers = Db.Int(reader, "RegisteredUsers");
+                result.RegisteredAndActiveUsers = Db.Int(reader, "RegisteredAndActiveUsers");
+                result.RegisteredButInactiveUsers = Db.Int(reader, "RegisteredButInactiveUsers");
+            }
+        }
+
+        const string deactivationColumnSql = """
+SELECT CASE
+           WHEN COL_LENGTH('AmericaMarket.dbo.Users', 'DeactivatedAt') IS NULL THEN 0
+           ELSE 1
+       END;
+""";
+
+        await using (var columnCommand = new SqlCommand(deactivationColumnSql, connection)
+        {
+            CommandType = CommandType.Text,
+            CommandTimeout = _commandTimeoutSeconds
+        })
+        {
+            var hasColumnValue = await columnCommand.ExecuteScalarAsync(cancellationToken);
+            var hasDeactivatedAt = Convert.ToInt32(hasColumnValue) == 1;
+
+            if (!hasDeactivatedAt)
+            {
+                result.DeactivatedUsers = null;
+                return result;
+            }
+        }
+
+        const string deactivationSql = """
+SELECT COUNT(*)
+FROM [AmericaMarket].[dbo].[Users]
+WHERE DeactivatedAt >= @StartUtc
+  AND DeactivatedAt < @EndUtc;
+""";
+
+        await using (var command = CreateCommand(connection, deactivationSql, period))
+        {
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            result.DeactivatedUsers = value is null or DBNull ? 0 : Convert.ToInt32(value);
+        }
+
+        return result;
     }
 
     private async Task<VisitGeneralSummary> GetVisitSummaryAsync(
@@ -510,7 +585,9 @@ ORDER BY CantidadVisitas DESC;
     }
 
     private sealed record ReportPeriod(
-        DateTime ReportDate,
+        DateTime DisplayDate,
+        DateTime StartEastern,
+        DateTime EndEastern,
         DateTime StartUtc,
         DateTime EndUtc);
 

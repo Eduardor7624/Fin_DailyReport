@@ -2,11 +2,18 @@ namespace FinzatiDailyReport.Models;
 
 public sealed class DailyReportData
 {
+    // Date shown in the email subject, file name, and report header.
     public DateTime ReportDate { get; init; }
+
+    // Actual reporting window in Eastern Time.
+    public DateTime PeriodStartEastern { get; init; }
+    public DateTime PeriodEndEastern { get; init; }
+
     public ProcessGeneralSummary ProcessSummary { get; init; } = new();
     public List<ProcessGroupSummary> ProcessGroups { get; init; } = [];
     public List<OperationErrorSummary> OperationErrors { get; init; } = [];
     public List<ProcessErrorSummary> ProcessErrors { get; init; } = [];
+    public UserActivitySummary UserActivity { get; init; } = new();
     public VisitGeneralSummary VisitSummary { get; init; } = new();
     public List<PageVisitSummary> PageVisits { get; init; } = [];
     public List<CompanyVisitSummary> CompanyVisits { get; init; } = [];
@@ -65,6 +72,17 @@ public sealed class ProcessErrorSummary
     public int ErrorCount { get; set; }
     public DateTime? FirstOccurrence { get; set; }
     public DateTime? LastOccurrence { get; set; }
+}
+
+public sealed class UserActivitySummary
+{
+    public int RegisteredUsers { get; set; }
+    public int RegisteredAndActiveUsers { get; set; }
+    public int RegisteredButInactiveUsers { get; set; }
+
+    // Null means the Users table does not currently contain DeactivatedAt.
+    public int? DeactivatedUsers { get; set; }
+    public bool HasDeactivationTracking => DeactivatedUsers.HasValue;
 }
 
 public sealed class VisitGeneralSummary
