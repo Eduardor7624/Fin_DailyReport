@@ -43,14 +43,16 @@ public sealed class DailyReportRepository
             PageVisits = await GetPageVisitsAsync(connection, period, cancellationToken),
             CompanyVisits = await GetCompanyVisitsAsync(connection, period, cancellationToken),
             PageTypeVisits = await GetPageTypeVisitsAsync(connection, period, cancellationToken),
-            ReferrerVisits = await GetReferrerVisitsAsync(connection, period, cancellationToken)
+            ReferrerVisits = await GetReferrerVisitsAsync(connection, period, cancellationToken),
+            CountryVisits = await GetCountryVisitsAsync(connection, period, cancellationToken),
+            ClientTypeVisits = await GetClientTypeVisitsAsync(connection, period, cancellationToken)
         };
     }
 
     /// <summary>
-    /// Builds the interval from 9:25 AM Eastern on the requested start date
+    /// Builds the interval from 9:26 AM Eastern on the requested start date
     /// through the current moment. With DefaultDaysOffset = -1, a report run
-    /// today reads everything from yesterday at 9:25 AM Eastern until now.
+    /// today reads everything from yesterday at 9:26 AM Eastern until now.
     ///
     /// The displayed report date is today's date in Eastern Time, not the
     /// requested start date.
@@ -61,7 +63,7 @@ public sealed class DailyReportRepository
         var nowEastern = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, _easternTimeZone);
 
         var startEastern = DateTime.SpecifyKind(
-            reportDate.Date.AddHours(9).AddMinutes(25),
+            reportDate.Date.AddHours(9).AddMinutes(26),
             DateTimeKind.Unspecified);
 
         var startUtc = TimeZoneInfo.ConvertTimeToUtc(startEastern, _easternTimeZone);
@@ -164,8 +166,18 @@ WHERE CreatedDate >= @StartUtc
         const string sql = """
 SELECT ApplicationName,
        RunMode,
-       Status,
+       CASE
+           WHEN SUM(CASE WHEN UPPER(ISNULL(Status,'')) IN ('ERROR','FAILED','FAILURE','SUCCESS_WITH_ERRORS')
+                              OR ISNULL(ErrorCount,0) > 0 OR ProcessException IS NOT NULL THEN 1 ELSE 0 END) > 0
+               THEN 'ATTENTION'
+           WHEN SUM(CASE WHEN ISNULL(WarningCount,0) > 0 THEN 1 ELSE 0 END) > 0
+               THEN 'WARNING'
+           ELSE 'SUCCESS'
+       END Status,
        COUNT(*) CantidadEjecuciones,
+       SUM(CASE WHEN UPPER(ISNULL(Status,'')) = 'SUCCESS' AND ISNULL(ErrorCount,0) = 0 AND ProcessException IS NULL THEN 1 ELSE 0 END) EjecucionesExitosas,
+       SUM(CASE WHEN UPPER(ISNULL(Status,'')) IN ('ERROR','FAILED','FAILURE','SUCCESS_WITH_ERRORS') OR ISNULL(ErrorCount,0) > 0 OR ProcessException IS NOT NULL THEN 1 ELSE 0 END) EjecucionesConError,
+       SUM(CASE WHEN ISNULL(WarningCount,0) > 0 THEN 1 ELSE 0 END) EjecucionesConWarnings,
        MIN(StartedDate) PrimeraEjecucion,
        MAX(StartedDate) UltimaEjecucion,
        AVG(CAST(DurationSeconds AS DECIMAL(18,2))) DuracionPromedioSegundos,
@@ -177,8 +189,9 @@ SELECT ApplicationName,
 FROM dbo.AmericaMarketProcessRuns
 WHERE CreatedDate >= @StartUtc
   AND CreatedDate < @EndUtc
-GROUP BY ApplicationName, RunMode, Status
-ORDER BY ApplicationName, RunMode, Status;
+GROUP BY ApplicationName, RunMode
+ORDER BY CASE WHEN SUM(CASE WHEN UPPER(ISNULL(Status,'')) IN ('ERROR','FAILED','FAILURE','SUCCESS_WITH_ERRORS') OR ISNULL(ErrorCount,0) > 0 OR ProcessException IS NOT NULL THEN 1 ELSE 0 END) > 0 THEN 0 ELSE 1 END,
+         ApplicationName, RunMode;
 """;
 
         var list = new List<ProcessGroupSummary>();
@@ -194,6 +207,9 @@ ORDER BY ApplicationName, RunMode, Status;
                 RunMode = Db.String(reader, "RunMode"),
                 Status = Db.String(reader, "Status"),
                 ExecutionCount = Db.Int(reader, "CantidadEjecuciones"),
+                SuccessfulExecutions = Db.Int(reader, "EjecucionesExitosas"),
+                ErrorExecutions = Db.Int(reader, "EjecucionesConError"),
+                WarningExecutions = Db.Int(reader, "EjecucionesConWarnings"),
                 FirstExecution = Db.UtcDateToTimeZone(reader, "PrimeraEjecucion", _easternTimeZone),
                 LastExecution = Db.UtcDateToTimeZone(reader, "UltimaEjecucion", _easternTimeZone),
                 AverageDurationSeconds = Db.Decimal(reader, "DuracionPromedioSegundos"),
@@ -369,10 +385,14 @@ WHERE DeactivatedAt >= @StartUtc
     {
         const string sql = """
 SELECT COUNT(*) TotalVisitas,
-       COUNT(DISTINCT [Path]) PaginasDiferentes,
-       COUNT(DISTINCT NULLIF(Referrer,'')) ReferrersDiferentes,
-       MIN(CreatedAt) PrimeraVisita,
-       MAX(CreatedAt) UltimaVisita
+       SUM(CASE WHEN ISNULL(IsBot,0) = 0 THEN 1 ELSE 0 END) VisitasHumanas,
+       SUM(CASE WHEN ISNULL(IsBot,0) = 1 THEN 1 ELSE 0 END) VisitasBots,
+       COUNT(DISTINCT CASE WHEN ISNULL(IsBot,0) = 0 THEN NULLIF(CountryCode,'') END) Paises,
+       SUM(CASE WHEN ISNULL(IsBot,0) = 0 AND CountryCode = 'US' THEN 1 ELSE 0 END) VisitasEstadosUnidos,
+       COUNT(DISTINCT CASE WHEN ISNULL(IsBot,0) = 0 THEN [Path] END) PaginasDiferentes,
+       COUNT(DISTINCT CASE WHEN ISNULL(IsBot,0) = 0 THEN NULLIF(Referrer,'') END) ReferrersDiferentes,
+       MIN(CASE WHEN ISNULL(IsBot,0) = 0 THEN CreatedAt END) PrimeraVisita,
+       MAX(CASE WHEN ISNULL(IsBot,0) = 0 THEN CreatedAt END) UltimaVisita
 FROM dbo.AppPageVisitLog
 WHERE CreatedAt >= @StartUtc
   AND CreatedAt < @EndUtc;
@@ -387,6 +407,11 @@ WHERE CreatedAt >= @StartUtc
         return new VisitGeneralSummary
         {
             TotalVisits = Db.Int(reader, "TotalVisitas"),
+            HumanVisits = Db.Int(reader, "VisitasHumanas"),
+            BotVisits = Db.Int(reader, "VisitasBots"),
+            HumanVisitPercent = Db.Int(reader, "TotalVisitas") == 0 ? 0 : Math.Round(Db.Int(reader, "VisitasHumanas") * 100m / Db.Int(reader, "TotalVisitas"), 1),
+            Countries = Db.Int(reader, "Paises"),
+            UnitedStatesVisits = Db.Int(reader, "VisitasEstadosUnidos"),
             DifferentPages = Db.Int(reader, "PaginasDiferentes"),
             DifferentReferrers = Db.Int(reader, "ReferrersDiferentes"),
             FirstVisit = Db.UtcDateToTimeZone(reader, "PrimeraVisita", _easternTimeZone),
@@ -407,6 +432,7 @@ SELECT ISNULL([Path], '(No path)') [Path],
 FROM dbo.AppPageVisitLog
 WHERE CreatedAt >= @StartUtc
   AND CreatedAt < @EndUtc
+  AND ISNULL(IsBot,0) = 0
 GROUP BY [Path]
 ORDER BY CantidadVisitas DESC, [Path];
 """;
@@ -451,6 +477,7 @@ WITH CompanyPaths AS
     FROM dbo.AppPageVisitLog
     WHERE CreatedAt >= @StartUtc
       AND CreatedAt < @EndUtc
+      AND ISNULL(IsBot,0) = 0
       AND ([Path] LIKE '/en/company/%' OR [Path] LIKE '/es/company/%')
 )
 SELECT Symbol,
@@ -505,6 +532,7 @@ WITH Classified AS
     FROM dbo.AppPageVisitLog
     WHERE CreatedAt >= @StartUtc
       AND CreatedAt < @EndUtc
+      AND ISNULL(IsBot,0) = 0
 )
 SELECT TipoPagina,
        COUNT(*) CantidadVisitas,
@@ -549,6 +577,7 @@ SELECT COALESCE(NULLIF(Referrer,''), '(Direct / No referrer)') Referrer,
 FROM dbo.AppPageVisitLog
 WHERE CreatedAt >= @StartUtc
   AND CreatedAt < @EndUtc
+  AND ISNULL(IsBot,0) = 0
 GROUP BY COALESCE(NULLIF(Referrer,''), '(Direct / No referrer)')
 ORDER BY CantidadVisitas DESC;
 """;
@@ -569,6 +598,88 @@ ORDER BY CantidadVisitas DESC;
             });
         }
 
+        return list;
+    }
+
+    private async Task<List<CountryVisitSummary>> GetCountryVisitsAsync(
+        SqlConnection connection,
+        ReportPeriod period,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+WITH HumanVisits AS
+(
+    SELECT COALESCE(NULLIF(CountryCode,''), 'UNKNOWN') CountryCode
+    FROM dbo.AppPageVisitLog
+    WHERE CreatedAt >= @StartUtc
+      AND CreatedAt < @EndUtc
+      AND ISNULL(IsBot,0) = 0
+), Totals AS
+(
+    SELECT COUNT(*) TotalHumanVisits FROM HumanVisits
+)
+SELECT h.CountryCode,
+       COUNT(*) CantidadVisitas,
+       CAST(CASE WHEN t.TotalHumanVisits = 0 THEN 0 ELSE COUNT(*) * 100.0 / t.TotalHumanVisits END AS DECIMAL(6,2)) Porcentaje
+FROM HumanVisits h
+CROSS JOIN Totals t
+GROUP BY h.CountryCode, t.TotalHumanVisits
+ORDER BY CantidadVisitas DESC, h.CountryCode;
+""";
+
+        var list = new List<CountryVisitSummary>();
+        await using var command = CreateCommand(connection, sql, period);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            list.Add(new CountryVisitSummary
+            {
+                CountryCode = Db.String(reader, "CountryCode"),
+                VisitCount = Db.Int(reader, "CantidadVisitas"),
+                PercentOfHumanVisits = Db.Decimal(reader, "Porcentaje") ?? 0
+            });
+        }
+        return list;
+    }
+
+    private async Task<List<ClientTypeVisitSummary>> GetClientTypeVisitsAsync(
+        SqlConnection connection,
+        ReportPeriod period,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+WITH HumanVisits AS
+(
+    SELECT COALESCE(NULLIF(ClientType,''), 'UNKNOWN') ClientType
+    FROM dbo.AppPageVisitLog
+    WHERE CreatedAt >= @StartUtc
+      AND CreatedAt < @EndUtc
+      AND ISNULL(IsBot,0) = 0
+), Totals AS
+(
+    SELECT COUNT(*) TotalHumanVisits FROM HumanVisits
+)
+SELECT h.ClientType,
+       COUNT(*) CantidadVisitas,
+       CAST(CASE WHEN t.TotalHumanVisits = 0 THEN 0 ELSE COUNT(*) * 100.0 / t.TotalHumanVisits END AS DECIMAL(6,2)) Porcentaje
+FROM HumanVisits h
+CROSS JOIN Totals t
+GROUP BY h.ClientType, t.TotalHumanVisits
+ORDER BY CantidadVisitas DESC, h.ClientType;
+""";
+
+        var list = new List<ClientTypeVisitSummary>();
+        await using var command = CreateCommand(connection, sql, period);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            list.Add(new ClientTypeVisitSummary
+            {
+                ClientType = Db.String(reader, "ClientType"),
+                VisitCount = Db.Int(reader, "CantidadVisitas"),
+                PercentOfHumanVisits = Db.Decimal(reader, "Porcentaje") ?? 0
+            });
+        }
         return list;
     }
 

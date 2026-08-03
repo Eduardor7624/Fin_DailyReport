@@ -36,11 +36,11 @@ public sealed class HtmlReportBuilder
 <tr><td style="padding:28px 32px 8px"><p style="margin:0 0 18px;line-height:1.6">Good morning,</p><p style="margin:0 0 10px;line-height:1.6">Please find below the Finzati daily summary of system processes, errors, user registrations, and website activity generated on <strong>{{d.ReportDate:yyyy-MM-dd}}</strong>.</p><p style="margin:0 0 22px;color:#64748b;font-size:13px;line-height:1.5">Reporting window: <strong>{{FmtPeriod(d.PeriodStartEastern, d.PeriodEndEastern)}} Eastern Time</strong>.</p>
 <div style="border:1px solid {{accent}};background:{{bg}};border-radius:10px;padding:18px 20px"><div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:{{accent}};font-weight:bold">Overall Status</div><div style="font-size:23px;font-weight:bold;color:{{accent}};margin:4px 0">{{HealthLabel(a.Health)}}</div><div style="font-size:14px;line-height:1.5;color:#374151">{{E(HealthExplanation(a))}}</div></div></td></tr>
 {{Section("Process Metrics", ProcessCards(d.ProcessSummary))}}
-{{Section("Application Summary", ProcessTable(d.ProcessGroups))}}
+{{Section("Application Summary", ProcessDecisionSummary(d.ProcessSummary) + ProcessTable(d.ProcessGroups))}}
 {{Section("Daily Errors", ErrorIntro(a) + OperationErrorsTable(a.PriorityOperationErrors))}}
 {{Section("Processes Requiring Attention", ProcessErrorsTable(a.PriorityProcessErrors))}}
-{{Section("User Activity", UserActivityCards(d.UserActivity))}}
-{{Section("Website Activity", VisitCards(d.VisitSummary) + PageTypeTable(d.PageTypeVisits) + TwoColumnLists(d))}}
+{{Section("User Activity", UserActivityDecisionSummary(d.UserActivity) + UserActivityCards(d.UserActivity))}}
+{{Section("Website Activity", VisitDecisionSummary(d.VisitSummary, d.CountryVisits) + VisitCards(d.VisitSummary) + CountryAndDeviceTables(d) + PageTypeTable(d.PageTypeVisits) + TwoColumnLists(d))}}
 {{Section("Conclusion and Recommended Actions", Conclusion(a))}}
 <tr><td style="padding:8px 32px 30px"><p style="margin:20px 0 4px;line-height:1.5">Best regards,</p><p style="margin:0;font-weight:bold">{{E(_s.PreparedBy)}}</p></td></tr>
 <tr><td style="padding:16px 32px;background:#f8fafc;color:#64748b;font-size:11px;line-height:1.5;border-top:1px solid #e5e7eb">This report was generated automatically by FinzatiDailyReport. Totals reflect records found between {{E(FmtPeriod(d.PeriodStartEastern, d.PeriodEndEastern))}} Eastern Time.</td></tr>
@@ -72,11 +72,57 @@ public sealed class HtmlReportBuilder
     ]);
 
     private static string VisitCards(VisitGeneralSummary x) => Cards([
-        ("Total Visits", x.TotalVisits.ToString("N0")),
-        ("Unique Pages", x.DifferentPages.ToString("N0")),
-        ("Referrers", x.DifferentReferrers.ToString("N0")),
-        ("Activity Window", $"{FmtTime(x.FirstVisit)} – {FmtTime(x.LastVisit)}")
+        ("All Requests", x.TotalVisits.ToString("N0")),
+        ("Real Visits", x.HumanVisits.ToString("N0")),
+        ("Bot Visits", x.BotVisits.ToString("N0")),
+        ("Real Traffic", $"{x.HumanVisitPercent:N1}%"),
+        ("Countries", x.Countries.ToString("N0")),
+        ("United States", x.UnitedStatesVisits.ToString("N0")),
+        ("Unique Human Pages", x.DifferentPages.ToString("N0")),
+        ("Human Activity Window", $"{FmtTime(x.FirstVisit)} – {FmtTime(x.LastVisit)}")
     ]);
+
+
+    private static string ProcessDecisionSummary(ProcessGeneralSummary x)
+    {
+        var message = x.TotalExecutions == 0
+            ? "No scheduled-process executions were recorded in this reporting window. Confirm that the nightly jobs ran."
+            : x.ErrorExecutions == 0
+                ? $"All {x.TotalExecutions:N0} recorded process executions completed without detected errors."
+                : $"{x.ErrorExecutions:N0} of {x.TotalExecutions:N0} process executions require attention. Review the affected applications below.";
+        return DecisionBox(message, x.ErrorExecutions == 0 && x.TotalExecutions > 0);
+    }
+
+    private static string UserActivityDecisionSummary(UserActivitySummary x)
+    {
+        var message = x.RegisteredUsers == 0
+            ? "No new Finzati users registered during this reporting window."
+            : $"{x.RegisteredUsers:N0} new user(s) registered: {x.RegisteredAndActiveUsers:N0} active and {x.RegisteredButInactiveUsers:N0} inactive.";
+        return DecisionBox(message, x.RegisteredUsers > 0);
+    }
+
+    private static string VisitDecisionSummary(VisitGeneralSummary x, IEnumerable<CountryVisitSummary> countries)
+    {
+        var topCountry = countries.FirstOrDefault();
+        var countryText = topCountry is null ? "No country data was available." : $"Top country: {topCountry.CountryCode} with {topCountry.VisitCount:N0} real visits ({topCountry.PercentOfHumanVisits:N1}%).";
+        var message = $"Finzati received {x.TotalVisits:N0} requests: {x.HumanVisits:N0} real visits and {x.BotVisits:N0} bot visits. {countryText}";
+        return DecisionBox(message, x.HumanVisits > 0);
+    }
+
+    private static string CountryAndDeviceTables(DailyReportData d) =>
+        "<table width='100%' cellspacing='12' cellpadding='0' role='presentation'><tr>" +
+        "<td width='50%' valign='top'><h3 style='font-size:14px;margin:20px 0 8px'>Real Traffic by Country</h3>" +
+        Table(["Country", "Visits", "% Real Traffic"], d.CountryVisits.Take(10).Select(x => new[] { E(x.CountryCode), x.VisitCount.ToString("N0"), $"{x.PercentOfHumanVisits:N1}%" })) +
+        "</td><td width='50%' valign='top'><h3 style='font-size:14px;margin:20px 0 8px'>Real Traffic by Device</h3>" +
+        Table(["Client Type", "Visits", "% Real Traffic"], d.ClientTypeVisits.Select(x => new[] { E(x.ClientType), x.VisitCount.ToString("N0"), $"{x.PercentOfHumanVisits:N1}%" })) +
+        "</td></tr></table>";
+
+    private static string DecisionBox(string message, bool positive)
+    {
+        var border = positive ? "#86efac" : "#fcd34d";
+        var background = positive ? "#f0fdf4" : "#fffbeb";
+        return $"<div style='margin:0 0 14px;padding:13px 15px;border:1px solid {border};background:{background};border-radius:8px;font-size:14px;line-height:1.55'>{E(message)}</div>";
+    }
 
     private static string Cards(IEnumerable<(string Label, string Value)> cards)
     {
@@ -103,14 +149,15 @@ public sealed class HtmlReportBuilder
     }
 
     private static string ProcessTable(IEnumerable<ProcessGroupSummary> rows) => Table(
-        ["Application / Mode", "Status", "Runs", "Items", "Errors", "Avg. Duration"],
+        ["Application / Mode", "Decision Status", "Runs", "Successful", "Problem Runs", "Items / Errors", "Avg. Duration"],
         rows.Select(x => new[]
         {
             E(x.ApplicationName) + "<br><span style='color:#64748b;font-size:11px'>" + E(x.RunMode) + "</span>",
             Status(x.Status),
             x.ExecutionCount.ToString("N0"),
-            x.TotalItems.ToString("N0"),
-            x.TotalErrors.ToString("N0"),
+            x.SuccessfulExecutions.ToString("N0"),
+            x.ErrorExecutions.ToString("N0"),
+            $"{x.TotalItems:N0} / {x.TotalErrors:N0}",
             FmtDuration(x.AverageDurationSeconds)
         }));
 
@@ -260,7 +307,7 @@ public sealed class HtmlReportBuilder
         {
             "SUCCESS" => "#15803d",
             "ERROR" or "FAILED" or "FAILURE" => "#b91c1c",
-            "SUCCESS_WITH_ERRORS" => "#b45309",
+            "SUCCESS_WITH_ERRORS" or "ATTENTION" or "WARNING" => "#b45309",
             _ => "#b45309"
         };
 

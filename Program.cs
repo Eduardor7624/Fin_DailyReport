@@ -40,7 +40,7 @@ try
         settings.Logging.RetentionDays);
 
     logger.Info($"Starting {applicationName}. Period start date: {reportDate:yyyy-MM-dd}. NoSend: {arguments.NoSend}.");
-    Console.WriteLine($"Finzati Daily Report - period starts {reportDate:yyyy-MM-dd} at 09:25 Eastern");
+    Console.WriteLine($"Finzati Daily Report - period starts {reportDate:yyyy-MM-dd} at 09:26 Eastern");
     Console.WriteLine(new string('-', 48));
 
     var repository = new DailyReportRepository(
@@ -69,7 +69,7 @@ try
     {
         Console.WriteLine("Sending email...");
         var sender = new SmtpEmailSender(settings.Email);
-        var emailSubject = TemplateHelper.ReplaceDate(settings.Email.SubjectTemplate, data.ReportDate);
+        var emailSubject = $"{TemplateHelper.ReplaceDate(settings.Email.SubjectTemplate, data.ReportDate)} - {data.PeriodEndEastern:yyyy-MM-dd hh:mm tt} Miami";
         await sender.SendHtmlAsync(emailSubject, html, cancellationSource.Token);
         logger.Info($"Email sent successfully to: {string.Join(", ", settings.Email.To)}.");
         Console.WriteLine("Email sent successfully.");

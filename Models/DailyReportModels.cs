@@ -19,6 +19,8 @@ public sealed class DailyReportData
     public List<CompanyVisitSummary> CompanyVisits { get; init; } = [];
     public List<PageTypeVisitSummary> PageTypeVisits { get; init; } = [];
     public List<ReferrerVisitSummary> ReferrerVisits { get; init; } = [];
+    public List<CountryVisitSummary> CountryVisits { get; init; } = [];
+    public List<ClientTypeVisitSummary> ClientTypeVisits { get; init; } = [];
 }
 
 public sealed class ProcessGeneralSummary
@@ -43,6 +45,9 @@ public sealed class ProcessGroupSummary
     public string RunMode { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public int ExecutionCount { get; set; }
+    public int SuccessfulExecutions { get; set; }
+    public int ErrorExecutions { get; set; }
+    public int WarningExecutions { get; set; }
     public DateTime? FirstExecution { get; set; }
     public DateTime? LastExecution { get; set; }
     public decimal? AverageDurationSeconds { get; set; }
@@ -88,6 +93,11 @@ public sealed class UserActivitySummary
 public sealed class VisitGeneralSummary
 {
     public int TotalVisits { get; set; }
+    public int HumanVisits { get; set; }
+    public int BotVisits { get; set; }
+    public decimal HumanVisitPercent { get; set; }
+    public int Countries { get; set; }
+    public int UnitedStatesVisits { get; set; }
     public int DifferentPages { get; set; }
     public int DifferentReferrers { get; set; }
     public DateTime? FirstVisit { get; set; }
@@ -125,6 +135,20 @@ public sealed class ReferrerVisitSummary
     public int VisitCount { get; set; }
     public DateTime? FirstVisit { get; set; }
     public DateTime? LastVisit { get; set; }
+}
+
+public sealed class CountryVisitSummary
+{
+    public string CountryCode { get; set; } = string.Empty;
+    public int VisitCount { get; set; }
+    public decimal PercentOfHumanVisits { get; set; }
+}
+
+public sealed class ClientTypeVisitSummary
+{
+    public string ClientType { get; set; } = string.Empty;
+    public int VisitCount { get; set; }
+    public decimal PercentOfHumanVisits { get; set; }
 }
 
 public enum SystemHealthLevel { Stable, Incidents, Critical }
